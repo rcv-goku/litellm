@@ -369,6 +369,11 @@ class GoogleGenAIAdapter:
     ) -> List[AllMessageValues]:
         """Transform Google GenAI contents to OpenAI messages format"""
         messages: List[AllMessageValues] = []
+        # Counter for generating unique tool call IDs
+        tool_call_counter = 0
+        # Track the last set of tool call IDs from model messages so
+        # subsequent user functionResponse parts can reference them
+        pending_tool_call_ids: List[str] = []
 
         # Handle system instruction
         if system_instruction:
@@ -390,6 +395,8 @@ class GoogleGenAIAdapter:
                     Union[ChatCompletionTextObject, ChatCompletionImageObject]
                 ] = []
                 tool_messages: List[ChatCompletionToolMessage] = []
+                # Index into pending_tool_call_ids for matching responses to calls
+                response_index = 0
 
                 for part in parts:
                     if isinstance(part, dict):
@@ -419,9 +426,17 @@ class GoogleGenAIAdapter:
                         elif "functionResponse" in part:
                             # Transform function response to tool message
                             func_response = part["functionResponse"]
+                            # Match to the corresponding tool call ID from the
+                            # preceding model message, or generate a unique one
+                            if response_index < len(pending_tool_call_ids):
+                                tool_id = pending_tool_call_ids[response_index]
+                            else:
+                                tool_call_counter += 1
+                                tool_id = f"call_{func_response.get('name', 'unknown')}_{tool_call_counter}"
+                            response_index += 1
                             tool_message = ChatCompletionToolMessage(
                                 role="tool",
-                                tool_call_id=f"call_{func_response.get('name', 'unknown')}",
+                                tool_call_id=tool_id,
                                 content=json.dumps(func_response.get("response", {})),
                             )
                             tool_messages.append(tool_message)
@@ -431,6 +446,9 @@ class GoogleGenAIAdapter:
                                 ChatCompletionTextObject, {"type": "text", "text": part}
                             )
                         )
+
+                # Clear pending IDs after consuming them
+                pending_tool_call_ids = []
 
                 # Add user message if there's content
                 if content_parts:
@@ -461,16 +479,21 @@ class GoogleGenAIAdapter:
                 # Handle assistant messages with potential function calls
                 combined_text = ""
                 tool_calls: List[ChatCompletionAssistantToolCall] = []
+                # Reset pending IDs for this model turn
+                pending_tool_call_ids = []
 
                 for part in parts:
                     if isinstance(part, dict):
                         if "text" in part:
                             combined_text += part["text"]
                         elif "functionCall" in part:
-                            # Transform function call to tool call
+                            # Transform function call to tool call with unique ID
                             func_call = part["functionCall"]
+                            tool_call_counter += 1
+                            tool_id = f"call_{func_call.get('name', 'unknown')}_{tool_call_counter}"
+                            pending_tool_call_ids.append(tool_id)
                             tool_call = ChatCompletionAssistantToolCall(
-                                id=f"call_{func_call.get('name', 'unknown')}",
+                                id=tool_id,
                                 type="function",
                                 function=ChatCompletionToolCallFunctionChunk(
                                     name=func_call.get("name", ""),
